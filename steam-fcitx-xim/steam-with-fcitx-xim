@@ -1,0 +1,62 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+auth_link="$HOME/.Xauthority"
+created_auth_link=0
+
+cleanup() {
+    if (( created_auth_link )) &&
+        [[ -L "$auth_link" ]] &&
+        [[ "$(readlink "$auth_link")" == "${XAUTHORITY:-}" ]]; then
+        rm "$auth_link"
+    fi
+}
+trap cleanup EXIT
+
+ready=0
+for _ in {1..90}; do
+    if [[ -n "${DISPLAY:-}" ]] &&
+        command -v xdpyinfo >/dev/null &&
+        xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 &&
+        fcitx5-remote --check >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    sleep 1
+done
+
+if (( ! ready )); then
+    echo "Steam startup: XWayland or Fcitx5 did not become ready within 90 seconds." >&2
+    exit 1
+fi
+
+if ! xprop -root XIM_SERVERS 2>/dev/null | grep -q '@server=fcitx'; then
+    if [[ ! -e "$auth_link" && ! -L "$auth_link" ]]; then
+        if [[ -z "${XAUTHORITY:-}" || ! -r "$XAUTHORITY" ]]; then
+            echo "Steam startup: XAUTHORITY is missing or unreadable." >&2
+            exit 1
+        fi
+        ln -s "$XAUTHORITY" "$auth_link"
+        created_auth_link=1
+    fi
+
+    fcitx5-remote -x
+
+    registered=0
+    for _ in {1..15}; do
+        if xprop -root XIM_SERVERS 2>/dev/null | grep -q '@server=fcitx'; then
+            registered=1
+            break
+        fi
+        sleep 1
+    done
+
+    if (( ! registered )); then
+        echo "Steam startup: Fcitx5 did not register its XIM server." >&2
+        exit 1
+    fi
+fi
+
+cleanup
+trap - EXIT
+exec /usr/bin/steam "$@"
